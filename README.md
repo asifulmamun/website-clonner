@@ -19,6 +19,7 @@ Clone any public webpage into a fully self-contained, offline-ready HTML templat
 - SSL fallback for certificate issues
 - Logs all CDN-fallback URLs with reasons to `cdn_load.txt`
 - Removes tracking scripts (Google Analytics, Facebook Pixel, Hotjar, etc.)
+- **Advanced Directory Management** — All projects are saved under a `cloned/` root folder, with support for nested paths and automatic sanitization of project names.
 
 ---
 
