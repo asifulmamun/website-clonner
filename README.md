@@ -4,6 +4,24 @@ Clone any public webpage into a fully self-contained, offline-ready HTML templat
 
 ---
 
+## Overview
+
+WebpageCloner provides two distinct ways to clone webpages into offline-ready templates. You can choose the approach that best suits your requirements:
+
+1. **Python-Based Approach**: A CLI tool for Python users to clone webpages and manage assets.
+2. **PHP-Based Approach**: A PHP script that supports both CLI and server-based execution.
+
+Both approaches are independent, and you can use either based on your preference or project requirements.
+
+---
+
+## Index
+
+- [Python Version](#python-version)
+- [PHP Version](#php-version)
+
+---
+
 ## Features
 
 - Interactive prompts — no need to type URLs in the command line
@@ -180,3 +198,12 @@ http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my
 ### Notes
 - Ensure the server has write permissions to the `cloned/` directory.
 - PHP extensions like `cURL` and `libxml` must be enabled.
+
+## Choose Your Approach
+
+This project provides two distinct ways to clone webpages into offline-ready templates. You can choose the approach that best suits your requirements:
+
+1. **Python-Based Approach**: Ideal for users who prefer Python scripting. This method uses a CLI tool to clone webpages and manage assets. See the [Python Documentation](#python-version) for details.
+2. **PHP-Based Approach**: Suitable for users who prefer PHP scripting. This method supports both CLI and server-based execution. See the [PHP Documentation](#php-version) for details.
+
+Both approaches are independent, and you can use either based on your preference or project requirements.
