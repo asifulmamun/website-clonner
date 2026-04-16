@@ -148,6 +148,22 @@ function neutralize_html($dom) {
         }
     }
 
+    // Remove common popup-related elements
+    $popup_keywords = ['popup', 'modal', 'overlay', 'dialog', 'lightbox'];
+    foreach ($dom->getElementsByTagName('*') as $element) {
+        $id = $element->getAttribute('id');
+        $class = $element->getAttribute('class');
+        foreach ($popup_keywords as $keyword) {
+            if (
+                stripos($id, $keyword) !== false ||
+                stripos($class, $keyword) !== false
+            ) {
+                $element->parentNode->removeChild($element);
+                break;
+            }
+        }
+    }
+
     // Remove <base> tag
     foreach ($dom->getElementsByTagName('base') as $base) {
         $base->parentNode->removeChild($base);
