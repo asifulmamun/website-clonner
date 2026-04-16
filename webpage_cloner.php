@@ -110,7 +110,11 @@ function scrape_and_download_assets($dom, $base_url, $assets_dir, $cdn_log_path)
 function neutralize_html($dom) {
     // Neutralize all <a> tags
     foreach ($dom->getElementsByTagName('a') as $a) {
-        $a->setAttribute('href', 'javascript:void(0)');
+        $href = $a->getAttribute('href');
+        if ($href && stripos($href, 'javascript:') === false) {
+            $a->setAttribute('onclick', "window.location.href='$href'; return false;");
+        }
+        $a->removeAttribute('href');
         $a->removeAttribute('target');
     }
 
@@ -154,7 +158,7 @@ function neutralize_html($dom) {
         }
     }
 
-    // Remove common popup-related elements
+    // Remove common popup-related elements but retain required modals
     $popup_keywords = ['popup', 'modal', 'overlay', 'dialog', 'lightbox', 'loader', 'spinner'];
     foreach ($dom->getElementsByTagName('*') as $element) {
         $id = $element->getAttribute('id');
@@ -162,9 +166,10 @@ function neutralize_html($dom) {
         $style = $element->getAttribute('style');
         foreach ($popup_keywords as $keyword) {
             if (
-                stripos($id, $keyword) !== false ||
+                (stripos($id, $keyword) !== false ||
                 stripos($class, $keyword) !== false ||
-                stripos($style, $keyword) !== false
+                stripos($style, $keyword) !== false) &&
+                stripos($class, 'required') === false // Retain required modals
             ) {
                 $element->parentNode->removeChild($element);
                 break;
