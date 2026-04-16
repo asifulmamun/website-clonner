@@ -69,6 +69,44 @@ The PHP script is compatible with the following versions:
 
 Ensure the required PHP extensions (e.g., `cURL`, `libxml`) are enabled.
 
+### Updated PHP Approach
+
+The PHP script now supports both CLI-based and URL-based execution modes. You can choose the mode that best fits your workflow.
+
+#### CLI-Based Execution
+
+1. Open a terminal and navigate to the script directory:
+   ```bash
+   cd C:/Users/Al Mamun/Desktop/app/scrapper
+   ```
+2. Run the script with the required parameters:
+   ```bash
+   php webpage_cloner.php --site_url="https://example.com" --project_name="my_project"
+   ```
+   - `--site_url`: The URL of the website to clone.
+   - `--project_name`: The name of the output folder inside `cloned/`.
+
+#### URL-Based Execution
+
+1. Place the `webpage_cloner.php` file in your server's document root (e.g., `htdocs` for XAMPP or `www` for Nginx).
+2. Access the script via a browser or HTTP client by passing the required parameters:
+   ```
+   http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my_project
+   ```
+   - `site_url`: The URL of the website to clone.
+   - `project_name`: The name of the output folder inside `cloned/`.
+
+#### Example Usage
+
+- **CLI**:
+  ```bash
+  php webpage_cloner.php --site_url="https://example.com" --project_name="my_project"
+  ```
+- **URL**:
+  ```
+  http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my_project
+  ```
+
 ### How to Run
 
 1. Open a terminal and navigate to the script directory:

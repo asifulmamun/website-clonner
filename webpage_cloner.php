@@ -171,8 +171,19 @@ function neutralize_html($dom) {
 }
 
 // Main Logic
-$site_url = isset($_GET['site_url']) ? $_GET['site_url'] : null;
-$project_name = isset($_GET['project_name']) ? $_GET['project_name'] : null;
+$site_url = null;
+$project_name = null;
+
+if (php_sapi_name() === 'cli') {
+    // CLI mode
+    $options = getopt("", ["site_url:", "project_name:"]);
+    $site_url = isset($options['site_url']) ? $options['site_url'] : null;
+    $project_name = isset($options['project_name']) ? $options['project_name'] : null;
+} else {
+    // Web-based execution
+    $site_url = isset($_GET['site_url']) ? $_GET['site_url'] : null;
+    $project_name = isset($_GET['project_name']) ? $_GET['project_name'] : null;
+}
 
 // Validate and sanitize inputs
 if (!$site_url) {
