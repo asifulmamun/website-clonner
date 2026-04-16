@@ -107,6 +107,53 @@ function scrape_and_download_assets($dom, $base_url, $assets_dir, $cdn_log_path)
     fclose($cdn_log);
 }
 
+function neutralize_html($dom) {
+    // Neutralize all <a> tags
+    foreach ($dom->getElementsByTagName('a') as $a) {
+        $a->setAttribute('href', 'javascript:void(0)');
+        $a->removeAttribute('target');
+    }
+
+    // Deactivate all <form> tags
+    foreach ($dom->getElementsByTagName('form') as $form) {
+        $form->setAttribute('action', '#');
+        $form->setAttribute('onsubmit', 'return false;');
+    }
+
+    // Remove unwanted attributes from all elements
+    $unwanted_attributes = ['onclick', 'onmouseover', 'onmousedown', 'onbeforeunload'];
+    foreach ($dom->getElementsByTagName('*') as $element) {
+        foreach ($unwanted_attributes as $attr) {
+            if ($element->hasAttribute($attr)) {
+                $element->removeAttribute($attr);
+            }
+        }
+    }
+
+    // Remove <script> tags with specific keywords in src or content
+    foreach ($dom->getElementsByTagName('script') as $script) {
+        $src = $script->getAttribute('src');
+        $content = $script->textContent;
+        if (
+            stripos($src, 'analytics') !== false ||
+            stripos($src, 'pixel') !== false ||
+            stripos($src, 'tracking') !== false ||
+            stripos($src, 'hotjar') !== false ||
+            stripos($content, 'analytics') !== false ||
+            stripos($content, 'pixel') !== false ||
+            stripos($content, 'tracking') !== false ||
+            stripos($content, 'hotjar') !== false
+        ) {
+            $script->parentNode->removeChild($script);
+        }
+    }
+
+    // Remove <base> tag
+    foreach ($dom->getElementsByTagName('base') as $base) {
+        $base->parentNode->removeChild($base);
+    }
+}
+
 // Main Logic
 $site_url = prompt("Enter the Website URL: ");
 $site_url = resolve_url($site_url);
@@ -130,7 +177,11 @@ libxml_use_internal_errors(true);
 $dom->loadHTML($html);
 libxml_clear_errors();
 
+// Scrape and download assets
 scrape_and_download_assets($dom, $site_url, $assets_dir, $cdn_log_path);
+
+// Neutralize interactive elements
+neutralize_html($dom);
 
 // Save modified HTML
 file_put_contents("$project_dir/index.html", $dom->saveHTML());

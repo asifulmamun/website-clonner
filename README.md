@@ -117,3 +117,49 @@ https://fonts.googleapis.com/css2?family=Roboto
 https://cdn.example.com/slow-asset.js
     reason: timeout
 ```
+
+---
+
+## PHP Version
+
+### Requirements
+- PHP 7.4 or higher
+- cURL extension enabled
+
+### How to Run
+1. Open a terminal and navigate to the script directory:
+   ```bash
+   cd C:/Users/Al Mamun/Desktop/app/scrapper
+   ```
+2. Run the script using PHP CLI:
+   ```bash
+   php webpage_cloner.php
+   ```
+3. Follow the prompts to enter the website URL and project name.
+
+### Example Session
+```
+Enter the Website URL: example.com
+[~] Trying https://example.com … OK
+
+Enter Project Name: my-site/v1
+[~] Project name adjusted to: 'my-site/v1'
+
+Cloning complete. Output saved to cloned/my-site/v1
+```
+
+### Output Structure
+```
+cloned/
+└── my-site/
+    └── v1/
+        ├── index.html        ← Offline-ready HTML
+        ├── assets/           ← All downloaded CSS, JS, images, fonts
+        └── cdn_load.txt      ← Assets still loaded from the internet
+```
+
+### Features
+- Smart URL Auto-Correction: Tries `https://` first, falls back to `http://`.
+- Neutralizes all interactive elements (links, forms, scripts).
+- Logs failed asset downloads to `cdn_load.txt`.
+- Supports nested project paths and sanitizes folder names.
