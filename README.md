@@ -86,9 +86,7 @@ cloned/
         └── cdn_load.txt      ← Assets still loaded from the internet
 ```
 
----
-
-## Run (Command-Line Mode)
+### Run (Command-Line Mode)
 
 You can also pass arguments directly to skip the prompts:
 
@@ -108,9 +106,7 @@ python webpage_cloner.py "https://asifulmamun.info.bd" -o asif-site/v2
 | `--timeout` | HTTP timeout in seconds | `20` |
 | `--user-agent` | Custom User-Agent string | Chrome/124 |
 
----
-
-## Smart URL Auto-Correction
+### Smart URL Auto-Correction
 
 | Input | Tries | Result |
 |-------|-------|--------|
@@ -119,9 +115,7 @@ python webpage_cloner.py "https://asifulmamun.info.bd" -o asif-site/v2
 | `http://example.com` | Used as-is | Uses `http://example.com` |
 | completely invalid | Both fail | Asks user to try again |
 
----
-
-## cdn_load.txt
+### cdn_load.txt
 
 Assets that could not be downloaded locally are listed here with the failure reason:
 
