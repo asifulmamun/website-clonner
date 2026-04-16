@@ -1,0 +1,11 @@
+cloned_site
+cloned_site/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+venv/
+.env
