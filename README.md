@@ -41,11 +41,31 @@ Both approaches are independent, and you can use either based on your preference
 
 ---
 
-## Install dependencies
+## Python Approach
+
+### Install Dependencies
+
+Ensure you have Python 3.10.6 installed. The script has been tested with pip 26.0.1, which comes with Python 3.10. You can install the required dependencies using:
 
 ```bash
 pip install -r requirements.txt
 ```
+
+### Python Version Compatibility
+
+- **Python Version**: 3.10.6
+- **Pip Version**: 26.0.1
+
+---
+
+## PHP Version Compatibility
+
+The PHP script is compatible with the following versions:
+
+- **Minimum PHP Version**: 7.4
+- **Tested Up To**: 8.2
+
+Ensure the required PHP extensions (e.g., `cURL`, `libxml`) are enabled.
 
 ---
 
@@ -193,11 +213,11 @@ http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my
 - Ensure the server has write permissions to the `cloned/` directory.
 - PHP extensions like `cURL` and `libxml` must be enabled.
 
-## Choose Your Approach
+## Both Approaches
 
 This project provides two distinct ways to clone webpages into offline-ready templates. You can choose the approach that best suits your requirements:
 
-1. **Python-Based Approach**: Ideal for users who prefer Python scripting. This method uses a CLI tool to clone webpages and manage assets. See the [Python Documentation](#python-version) for details.
-2. **PHP-Based Approach**: Suitable for users who prefer PHP scripting. This method supports both CLI and server-based execution. See the [PHP Documentation](#php-version) for details.
+1. **Python-Based Approach**: A CLI tool for Python users to clone webpages and manage assets.
+2. **PHP-Based Approach**: A PHP script that supports both CLI and server-based execution.
 
 Both approaches are independent, and you can use either based on your preference or project requirements.
