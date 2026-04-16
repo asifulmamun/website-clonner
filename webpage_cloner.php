@@ -120,8 +120,14 @@ function neutralize_html($dom) {
         $form->setAttribute('onsubmit', 'return false;');
     }
 
+    // Disable all <button> tags
+    foreach ($dom->getElementsByTagName('button') as $button) {
+        $button->setAttribute('onclick', 'return false;');
+        $button->setAttribute('disabled', 'true');
+    }
+
     // Remove unwanted attributes from all elements
-    $unwanted_attributes = ['onclick', 'onmouseover', 'onmousedown', 'onbeforeunload'];
+    $unwanted_attributes = ['onclick', 'onmouseover', 'onmousedown', 'onbeforeunload', 'onfocus', 'onblur'];
     foreach ($dom->getElementsByTagName('*') as $element) {
         foreach ($unwanted_attributes as $attr) {
             if ($element->hasAttribute($attr)) {
@@ -149,17 +155,42 @@ function neutralize_html($dom) {
     }
 
     // Remove common popup-related elements
-    $popup_keywords = ['popup', 'modal', 'overlay', 'dialog', 'lightbox'];
+    $popup_keywords = ['popup', 'modal', 'overlay', 'dialog', 'lightbox', 'loader', 'spinner'];
     foreach ($dom->getElementsByTagName('*') as $element) {
         $id = $element->getAttribute('id');
         $class = $element->getAttribute('class');
+        $style = $element->getAttribute('style');
         foreach ($popup_keywords as $keyword) {
             if (
                 stripos($id, $keyword) !== false ||
-                stripos($class, $keyword) !== false
+                stripos($class, $keyword) !== false ||
+                stripos($style, $keyword) !== false
             ) {
                 $element->parentNode->removeChild($element);
                 break;
+            }
+        }
+    }
+
+    // Remove elements with inline styles indicating hidden or fixed positions
+    foreach ($dom->getElementsByTagName('*') as $element) {
+        $style = $element->getAttribute('style');
+        if (
+            stripos($style, 'display: none') !== false ||
+            stripos($style, 'visibility: hidden') !== false ||
+            stripos($style, 'position: fixed') !== false
+        ) {
+            $element->parentNode->removeChild($element);
+        }
+    }
+
+    // Handle lazy-loaded images
+    $lazy_attributes = ['data-src', 'data-lazy', 'data-original', 'data-bg', 'data-background', 'data-srcset'];
+    foreach ($dom->getElementsByTagName('img') as $img) {
+        foreach ($lazy_attributes as $attr) {
+            if ($img->hasAttribute($attr)) {
+                $img->setAttribute('src', $img->getAttribute($attr));
+                $img->removeAttribute($attr);
             }
         }
     }
