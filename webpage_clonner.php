@@ -155,13 +155,21 @@ function neutralize_html($dom) {
 }
 
 // Main Logic
-$site_url = prompt("Enter the Website URL: ");
+$site_url = isset($_GET['site_url']) ? $_GET['site_url'] : null;
+$project_name = isset($_GET['project_name']) ? $_GET['project_name'] : null;
+
+// Validate and sanitize inputs
+if (!$site_url) {
+    die("Error: 'site_url' parameter is required.\n");
+}
 $site_url = resolve_url($site_url);
 if (!$site_url) {
-    die("Invalid or unreachable URL.\n");
+    die("Error: Invalid or unreachable 'site_url'.\n");
 }
 
-$project_name = prompt("Enter Project Name: ");
+if (!$project_name) {
+    die("Error: 'project_name' parameter is required.\n");
+}
 $project_name = sanitize_project_name($project_name);
 
 $project_dir = "$cloned_root/$project_name";

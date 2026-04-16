@@ -163,3 +163,20 @@ cloned/
 - Neutralizes all interactive elements (links, forms, scripts).
 - Logs failed asset downloads to `cdn_load.txt`.
 - Supports nested project paths and sanitizes folder names.
+
+### Run via a Web Server
+1. Place the `webpage_cloner.php` file in your server's document root (e.g., `htdocs` for XAMPP or `www` for Nginx).
+2. Access the script via a browser or HTTP client by passing the required parameters:
+   ```
+   http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my_project
+   ```
+3. The `site_url` parameter specifies the website to clone, and `project_name` defines the output folder inside `cloned/`.
+
+### Example URL
+```
+http://localhost/webpage_cloner.php?site_url=https://example.com&project_name=my_project
+```
+
+### Notes
+- Ensure the server has write permissions to the `cloned/` directory.
+- PHP extensions like `cURL` and `libxml` must be enabled.
