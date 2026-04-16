@@ -531,16 +531,142 @@ class WebpageCloner:
         return response
 
 
+# ---------------------------------------------------------------------------
+# Root folder where all cloned projects are stored
+# ---------------------------------------------------------------------------
+CLONED_ROOT = Path("cloned")
+
+
+def _try_reach(url: str, timeout: int = 10) -> bool:
+    """Return True if a HEAD (or GET) request to *url* succeeds."""
+    try:
+        resp = requests.head(url, timeout=timeout, allow_redirects=True)
+        return resp.status_code < 500
+    except requests.RequestException:
+        return False
+
+
+def _resolve_url(raw: str, timeout: int = 10) -> Optional[str]:
+    """
+    Given raw user input (with or without a scheme) return a reachable URL.
+
+    Resolution order:
+      1. If scheme provided → use as-is (no extra probe).
+      2. No scheme → try https:// first; if SSL/timeout/connection error → try http://.
+      3. Return None if both fail.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    has_scheme = raw.startswith(("http://", "https://"))
+
+    if has_scheme:
+        parsed = urlsplit(raw)
+        if parsed.scheme in ("http", "https") and parsed.netloc:
+            return raw
+        return None
+
+    # No scheme supplied — probe https first, then http
+    for scheme in ("https", "http"):
+        candidate = f"{scheme}://{raw}"
+        parsed = urlsplit(candidate)
+        if not parsed.netloc:
+            continue
+        print(f"  [~] Trying {candidate} …", end=" ", flush=True)
+        if _try_reach(candidate, timeout=timeout):
+            print("OK")
+            return candidate
+        print("failed")
+
+    return None
+
+
+def _prompt_url(timeout: int = 10) -> str:
+    """Interactively prompt for a URL with smart auto-correction and retry."""
+    while True:
+        raw = input("\n  Enter the Website URL: ").strip()
+        if not raw:
+            print("  [!] URL cannot be empty. Please try again.")
+            continue
+
+        url = _resolve_url(raw, timeout=timeout)
+        if url:
+            return url
+
+        print(
+            "  [!] Could not reach the URL via https:// or http://.\n"
+            "      Please check the address and try again."
+        )
+
+
+def _sanitize_project_name(name: str) -> str:
+    """
+    Convert a raw project name into a safe relative path.
+
+    Rules:
+      - Spaces → hyphens
+      - Backslashes → forward slashes (treat as path separators)
+      - Characters unsafe on Windows/Linux/macOS (except / and -) → hyphens
+      - Collapse repeated slashes / leading-trailing slashes
+    """
+    # Normalize backslashes to forward slashes first
+    name = name.replace("\\", "/")
+    # Spaces → hyphens
+    name = name.replace(" ", "-")
+    # Sanitize each path segment individually
+    segments = name.split("/")
+    clean_segments: List[str] = []
+    for seg in segments:
+        seg = re.sub(r'[<>:"|?*]+', "-", seg).strip(". -")
+        if seg:
+            clean_segments.append(seg)
+    return "/".join(clean_segments)
+
+
+def _prompt_project_name() -> str:
+    """Interactively prompt for a project/folder name with sanitization."""
+    while True:
+        name = input("  Enter Project Name (folder inside cloned/): ").strip()
+        if not name:
+            print("  [!] Project name cannot be empty. Please try again.\n")
+            continue
+
+        safe = _sanitize_project_name(name)
+        if not safe:
+            print("  [!] Project name contains only invalid characters. Please try again.\n")
+            continue
+
+        if safe != name:
+            print(f"  [~] Project name adjusted to: {safe!r}")
+        return safe
+
+
+def _print_banner() -> None:
+    print("=" * 60)
+    print("        WebpageCloner — Offline Page Downloader")
+    print("=" * 60)
+    print()
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Clone a webpage into an offline-ready template with localized assets."
     )
-    parser.add_argument("url", help="The page URL to clone.")
+    parser.add_argument(
+        "url",
+        nargs="?",
+        default=None,
+        help="The page URL to clone (optional; prompted if omitted).",
+    )
     parser.add_argument(
         "-o",
         "--output-dir",
-        default="cloned_site",
-        help="Directory where index.html and assets/ will be written.",
+        default=None,
+        help=(
+            "Output sub-folder name inside cloned/ "
+            "(optional; prompted if omitted). Supports nested paths, e.g. my_site/v1."
+        ),
     )
     parser.add_argument(
         "--user-agent",
@@ -560,14 +686,43 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = parse_args(argv)
 
+    _print_banner()
+
+    # --- Resolve URL ---
+    if args.url:
+        url = args.url
+        print(f"  URL        : {url}")
+    else:
+        url = _prompt_url(timeout=args.timeout)
+
+    # --- Resolve output directory (always inside cloned/) ---
+    if args.output_dir:
+        project_rel = _sanitize_project_name(args.output_dir)
+        if not project_rel:
+            print("  [!] Provided --output-dir is invalid after sanitization. Using 'project'.")
+            project_rel = "project"
+    else:
+        project_rel = _prompt_project_name()
+
+    output_dir = CLONED_ROOT / project_rel
+
+    print()
+    print(f"  Cloning  : {url}")
+    print(f"  Output   : {output_dir.resolve()}")
+    print("-" * 60)
+
     cloner = WebpageCloner(
-        url=args.url,
-        output_dir=args.output_dir,
+        url=url,
+        output_dir=output_dir,
         user_agent=args.user_agent,
         timeout=args.timeout,
     )
     output_file = cloner.clone()
+    print()
+    print("=" * 60)
     logging.info("Offline page written to %s", output_file)
+    print("  cdn_load.txt saved to: %s", output_dir / "cdn_load.txt")
+    print("=" * 60)
     return 0
 
 

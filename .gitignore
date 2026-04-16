@@ -1,5 +1,7 @@
 cloned_site
 cloned_site/
+cloned
+clone/
 
 # Python bytecode
 __pycache__/
