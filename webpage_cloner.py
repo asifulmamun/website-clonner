@@ -187,16 +187,53 @@ class WebpageCloner:
                 script["src"] = absolute_url  # CDN fallback
 
     def _rewrite_images(self, soup: BeautifulSoup) -> None:
+        import json
         for img in soup.find_all("img"):
-            selected_source = self._select_best_srcset_candidate(img.get("srcset")) or img.get("src")
-            absolute_url = self._absolute_url(selected_source)
+            # Extract real URL from data-srcs (JSON) or data-src
+            real_url = None
+            data_srcs = img.get("data-srcs")
+            if data_srcs:
+                try:
+                    srcs_dict = json.loads(data_srcs)
+                    # Pick the first key or any valid URL
+                    if isinstance(srcs_dict, dict):
+                        for k in srcs_dict:
+                            if isinstance(k, str) and k.strip():
+                                real_url = k
+                                break
+                except Exception:
+                    pass
+            # Fallback to data-src if no valid URL in data-srcs
+            if not real_url:
+                real_url = img.get("data-src")
+            # Fallback to srcset best candidate or src
+            if not real_url:
+                real_url = self._select_best_srcset_candidate(img.get("srcset")) or img.get("src")
+
+            # If src is a placeholder, always prioritize real_url
+            src_val = img.get("src", "")
+            if src_val.startswith("data:image/svg+xml") or src_val.startswith("data:image/gif"):
+                if img.get("data-srcs") or img.get("data-src"):
+                    # Already handled above
+                    pass
+                else:
+                    # No real_url found, keep placeholder
+                    real_url = src_val
+
+            absolute_url = self._absolute_url(real_url)
             if absolute_url:
                 record = self._download_asset(absolute_url)
                 if record:
                     img["src"] = f"assets/{record.local_name}"
                 else:
                     img["src"] = absolute_url  # CDN fallback
-            img.attrs.pop("srcset", None)
+            # Remove unwanted attributes
+            for attr in ["data-srcs", "data-src", "srcset", "data-lazy-src"]:
+                img.attrs.pop(attr, None)
+
+        # Remove all <noscript> tags
+        for noscript in soup.find_all("noscript"):
+            noscript.decompose()
 
     def _rewrite_media_sources(self, soup: BeautifulSoup) -> None:
         source_attrs = {
