@@ -49,7 +49,10 @@ Ensure you have Python 3.10.6 installed. The script has been tested with pip 26.
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
+
+The Python cloner now renders pages through Playwright before localizing assets. That means Chromium must be installed once with `playwright install chromium` so lazy loading, dynamic class changes, and client-side rendering are captured before the HTML is written.
 
 ### Python Version Compatibility
 
