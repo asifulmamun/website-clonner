@@ -369,9 +369,11 @@ class WebpageCloner:
             return True
         return False
 
-    def _rewrite_css_text(self, css_text: str, base_url: str, html_context: bool = False) -> str:
+    def _rewrite_css_text(self, css_text: str, base_url: str, html_context: bool = False, css_local_path: Optional[str] = None) -> str:
+        # First, handle @import
         rewritten = self._rewrite_css_imports(css_text, base_url=base_url, html_context=html_context)
-        return self._rewrite_css_urls(rewritten, base_url=base_url, html_context=html_context)
+        # Then, handle url() and @font-face
+        return self._rewrite_css_urls(rewritten, base_url=base_url, html_context=html_context, css_local_path=css_local_path)
 
     def _rewrite_css_imports(self, css_text: str, base_url: str, html_context: bool = False) -> str:
         def replace(match: re.Match[str]) -> str:
@@ -394,7 +396,7 @@ class WebpageCloner:
 
         return CSS_IMPORT_PATTERN.sub(replace, css_text)
 
-    def _rewrite_css_urls(self, css_text: str, base_url: str, html_context: bool = False) -> str:
+    def _rewrite_css_urls(self, css_text: str, base_url: str, html_context: bool = False, css_local_path: Optional[str] = None) -> str:
         def replace(match: re.Match[str]) -> str:
             raw_url = match.group("url").strip()
             if not raw_url or raw_url.startswith("data:"):
@@ -413,13 +415,13 @@ class WebpageCloner:
                     break
             record = self._download_asset(absolute_url, preferred_ext=preferred_ext)
             if not record:
-                self._log_cdn_url(absolute_url, reason="[Failed Download] CSS url() fallback")
-                return f"url('{absolute_url}')"  # CDN fallback
+                self._log_cdn_url(absolute_url, reason="[FALLBACK TO LIVE] Font or asset download failed")
+                return f"url('{absolute_url}')"  # Strict fallback to live
 
+            # If this is a font, rewrite to ../fonts/ for CSS in assets/css/
             if preferred_ext and record.local_name.lower().endswith(preferred_ext):
-                # Ensure fonts go to assets/fonts/
-                rewritten = f"assets/{record.local_name}" if html_context else record.local_name
-                return f"url('{rewritten}')"
+                # Always use ../fonts/[font_file] for CSS in assets/css/
+                return f"url('../fonts/{Path(record.local_name).name}')"
             if record.local_name.lower().endswith(".css"):
                 self._localize_css_asset(record, absolute_url)
             rewritten = f"assets/{record.local_name}" if html_context else record.local_name
@@ -434,7 +436,8 @@ class WebpageCloner:
         self.processed_css_assets.add(record.local_name)
         css_path = self.assets_dir / record.local_name
         css_text = css_path.read_text(encoding="utf-8", errors="ignore")
-        rewritten_css = self._rewrite_css_text(css_text, base_url=source_url)
+        # Pass the local path for correct font rewriting
+        rewritten_css = self._rewrite_css_text(css_text, base_url=source_url, css_local_path=css_path)
         css_path.write_text(rewritten_css, encoding="utf-8")
 
     def _download_asset(self, asset_url: str, preferred_ext: Optional[str] = None) -> Optional[AssetRecord]:
