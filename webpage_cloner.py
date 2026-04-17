@@ -138,6 +138,16 @@ class WebpageCloner:
             if not absolute_url:
                 continue
 
+            # Handle manifest, json, xml, and other non-standard assets
+            if rel & {"manifest"} or (absolute_url.endswith(('.webmanifest', '.json', '.xml'))):
+                record = self._download_asset(absolute_url)
+                if record:
+                    link["href"] = f"assets/{record.local_name}"
+                else:
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Manifest/JSON/XML fallback")
+                continue
+
             # Only localize .css files, fallback to CDN if download fails
             if "stylesheet" in rel or self._looks_like_stylesheet(absolute_url):
                 # Google Fonts and similar: if download fails, keep CDN link
@@ -444,6 +454,9 @@ class WebpageCloner:
             # Use the full URL (including query strings) to avoid 400 errors on
             # versioned or signed asset URLs.
             response = self._request(asset_url, stream=True)
+            if response.status_code != 200:
+                self._log_cdn_url(asset_url, reason=f"HTTP status {response.status_code}")
+                return None
         except requests.exceptions.SSLError:
             # SSL handshake failure: retry once without certificate verification
             logging.warning("SSL error on %s — retrying without verification", asset_url)
