@@ -138,10 +138,17 @@ class WebpageCloner:
             if not absolute_url:
                 continue
 
+            # Only localize .css files, fallback to CDN if download fails
             if "stylesheet" in rel or self._looks_like_stylesheet(absolute_url):
+                # Google Fonts and similar: if download fails, keep CDN link
+                if any(domain in absolute_url for domain in ONLINE_ONLY_DOMAINS):
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[CDN-only] Google Fonts or similar")
+                    continue
                 record = self._download_asset(absolute_url, preferred_ext=".css")
                 if not record:
-                    link["href"] = absolute_url  # CDN fallback
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] CSS fallback")
                     continue
                 self._localize_css_asset(record, absolute_url)
                 link["href"] = f"assets/{record.local_name}"
@@ -151,24 +158,26 @@ class WebpageCloner:
                     link["href"] = f"assets/{record.local_name}"
                 else:
                     link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Icon fallback")
             elif rel & {"preload", "prefetch", "modulepreload"}:
-                # Localize the preloaded resource if possible; keep online on failure
                 record = self._download_asset(absolute_url)
                 if record:
                     link["href"] = f"assets/{record.local_name}"
                 else:
                     link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Preload fallback")
             elif self._looks_like_asset_link(absolute_url):
                 record = self._download_asset(absolute_url)
                 if record:
                     link["href"] = f"assets/{record.local_name}"
                 else:
-                    link["href"] = absolute_url  # CDN fallback
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Asset fallback")
 
     def _rewrite_scripts(self, soup: BeautifulSoup) -> None:
         for script in list(soup.find_all("script")):
+            # Only remove if it's a tracker (handled in _remove_tracking_scripts)
             if self._is_tracking_script(script):
-                script.decompose()
                 continue
 
             src = script.get("src")
@@ -177,14 +186,14 @@ class WebpageCloner:
 
             absolute_url = self._absolute_url(src)
             if not absolute_url:
-                script.decompose()
                 continue
 
             record = self._download_asset(absolute_url, preferred_ext=".js")
             if record:
                 script["src"] = f"assets/{record.local_name}"
             else:
-                script["src"] = absolute_url  # CDN fallback
+                script["src"] = absolute_url
+                self._log_cdn_url(absolute_url, reason="[Failed Download] JS fallback")
 
     def _rewrite_images(self, soup: BeautifulSoup) -> None:
         import json
@@ -310,30 +319,45 @@ class WebpageCloner:
             # Optionally handle srcdoc as well (leave as is or convert if needed)
 
     def _deactivate_links_and_forms(self, soup: BeautifulSoup) -> None:
-        # Neutralize all <a> tags but keep JS event listeners
+        # Set <a> href to 'javascript:void(0)' only if it does not already have an event handler
         for anchor in soup.find_all("a"):
-            anchor["href"] = "javascript:void(0)"
-
-        # Prevent all form submissions
+            # If the anchor has any JS event attribute, do NOT overwrite href
+            has_event = any(attr for attr in anchor.attrs if attr.startswith("on"))
+            if not has_event:
+                anchor["href"] = "javascript:void(0)"
+        # Prevent all form submissions, but do not remove inline JS
         for form in soup.find_all("form"):
             form["action"] = "javascript:void(0)"
-            form["onsubmit"] = "return false;"
+            if "onsubmit" not in form.attrs:
+                form["onsubmit"] = "return false;"
 
     def _rewrite_base_tag(self, soup: BeautifulSoup) -> None:
         for base_tag in soup.find_all("base"):
             base_tag.decompose()
 
     def _remove_tracking_scripts(self, soup: BeautifulSoup) -> None:
+        # Only remove scripts that are clear external trackers (very conservative)
         for script in list(soup.find_all("script")):
-            # Only remove if src or inline text matches known tracking patterns
             if self._is_tracking_script(script):
                 script.decompose()
 
     def _is_tracking_script(self, script: Tag) -> bool:
+        # Only match clear external trackers, never remove internal libraries
         src = (script.get("src") or "").lower()
         inline_text = script.get_text(" ", strip=True).lower()
-        haystack = f"{src} {inline_text}"
-        return any(pattern in haystack for pattern in TRACKING_PATTERNS)
+        # Only match if src is an external tracker
+        tracker_domains = [
+            "google-analytics.com", "googletagmanager.com", "gtag/js", "doubleclick.net",
+            "connect.facebook.net", "facebook.com/tr", "hotjar.com", "segment.com",
+            "mixpanel.com", "clarity.ms", "fullstory.com", "matomo.js", "pixel.js", "pixel.track"
+        ]
+        # Only match if src is present and matches a tracker domain
+        if src and any(domain in src for domain in tracker_domains):
+            return True
+        # Optionally, match inline scripts that are obvious trackers (rare)
+        if not src and ("analytics" in inline_text or "gtag(" in inline_text or "fbq(" in inline_text):
+            return True
+        return False
 
     def _rewrite_css_text(self, css_text: str, base_url: str, html_context: bool = False) -> str:
         rewritten = self._rewrite_css_imports(css_text, base_url=base_url, html_context=html_context)
@@ -351,6 +375,7 @@ class WebpageCloner:
 
             record = self._download_asset(absolute_url, preferred_ext=".css")
             if not record:
+                self._log_cdn_url(absolute_url, reason="[Failed Download] CSS import fallback")
                 return f"@import url('{absolute_url}')"  # CDN fallback
 
             self._localize_css_asset(record, absolute_url)
@@ -369,13 +394,24 @@ class WebpageCloner:
             if not absolute_url:
                 return match.group(0)
 
-            record = self._download_asset(absolute_url)
+            # Font file detection
+            font_exts = (".woff2", ".woff", ".ttf", ".otf", ".eot")
+            preferred_ext = None
+            for ext in font_exts:
+                if raw_url.lower().endswith(ext):
+                    preferred_ext = ext
+                    break
+            record = self._download_asset(absolute_url, preferred_ext=preferred_ext)
             if not record:
+                self._log_cdn_url(absolute_url, reason="[Failed Download] CSS url() fallback")
                 return f"url('{absolute_url}')"  # CDN fallback
 
+            if preferred_ext and record.local_name.lower().endswith(preferred_ext):
+                # Ensure fonts go to assets/fonts/
+                rewritten = f"assets/{record.local_name}" if html_context else record.local_name
+                return f"url('{rewritten}')"
             if record.local_name.lower().endswith(".css"):
                 self._localize_css_asset(record, absolute_url)
-
             rewritten = f"assets/{record.local_name}" if html_context else record.local_name
             return f"url('{rewritten}')"
 
@@ -437,6 +473,10 @@ class WebpageCloner:
 
         # Sanitize the filename: strip query strings, keep only path + extension.
         local_name = self._build_local_name(asset_url, response.headers.get("Content-Type", ""), preferred_ext)
+        # Ensure subfolder exists
+        subfolder = local_name.split("/", 1)[0]
+        target_dir = self.assets_dir / subfolder
+        target_dir.mkdir(parents=True, exist_ok=True)
         target_path = self.assets_dir / local_name
         with target_path.open("wb") as file_handle:
             for chunk in response.iter_content(chunk_size=8192):
@@ -476,25 +516,42 @@ class WebpageCloner:
 
     def _build_local_name(self, asset_url: str, content_type: str, preferred_ext: Optional[str]) -> str:
         parsed = urlsplit(asset_url)
-        original_name = Path(posixpath.basename(parsed.path)).name
-        original_name = original_name or "asset"
+        original_name = Path(posixpath.basename(parsed.path)).name or "asset"
         stem = Path(original_name).stem or "asset"
-        extension = Path(original_name).suffix
-
+        extension = Path(original_name).suffix.lower()
         if not extension:
             guessed = mimetypes.guess_extension(content_type.split(";", 1)[0].strip()) if content_type else None
             extension = guessed or preferred_ext or ""
         elif preferred_ext and extension.lower() != preferred_ext.lower() and content_type.startswith("text/"):
             extension = preferred_ext
-
         safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip(".-") or "asset"
         digest = hashlib.sha1(asset_url.encode("utf-8")).hexdigest()[:10]
-        candidate = f"{safe_stem}-{digest}{extension}"
-
+        # Determine subfolder by extension/content type
+        ext = extension.lower()
+        if ext in [".js"]:
+            subfolder = "js"
+        elif ext in [".css"]:
+            subfolder = "css"
+        elif ext in [".woff", ".woff2", ".ttf", ".otf", ".eot"] or "font" in content_type:
+            subfolder = "fonts"
+        elif ext in [".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".bmp", ".ico"] or "image" in content_type:
+            subfolder = "img"
+        else:
+            # fallback: try to guess from content_type
+            if "javascript" in content_type:
+                subfolder = "js"
+            elif "css" in content_type:
+                subfolder = "css"
+            elif "font" in content_type:
+                subfolder = "fonts"
+            elif "image" in content_type:
+                subfolder = "img"
+            else:
+                subfolder = "misc"
+        candidate = f"{subfolder}/{safe_stem}-{digest}{extension}"
         existing_url = self.local_name_map.get(candidate)
         if existing_url and existing_url != asset_url:
-            candidate = f"{safe_stem}-{digest}-dup{extension}"
-
+            candidate = f"{subfolder}/{safe_stem}-{digest}-dup{extension}"
         self.local_name_map[candidate] = asset_url
         return candidate
 
