@@ -189,13 +189,13 @@ class WebpageCloner:
     def _rewrite_images(self, soup: BeautifulSoup) -> None:
         import json
         for img in soup.find_all("img"):
-            # Extract real URL from data-srcs (JSON) or data-src
+            # Find the real image URL from data-src, data-lazy, srcset, etc.
             real_url = None
+            # 1. data-srcs (JSON)
             data_srcs = img.get("data-srcs")
             if data_srcs:
                 try:
                     srcs_dict = json.loads(data_srcs)
-                    # Pick the first key or any valid URL
                     if isinstance(srcs_dict, dict):
                         for k in srcs_dict:
                             if isinstance(k, str) and k.strip():
@@ -203,22 +203,28 @@ class WebpageCloner:
                                 break
                 except Exception:
                     pass
-            # Fallback to data-src if no valid URL in data-srcs
+            # 2. data-src, data-lazy, data-original, data-bg, data-background
             if not real_url:
-                real_url = img.get("data-src")
-            # Fallback to srcset best candidate or src
+                for attr in LAZY_SRC_ATTRS:
+                    if attr == "data-srcset":
+                        continue
+                    val = img.get(attr)
+                    if val and not val.startswith("data:"):
+                        real_url = val
+                        break
+            # 3. srcset
             if not real_url:
-                real_url = self._select_best_srcset_candidate(img.get("srcset")) or img.get("src")
+                real_url = self._select_best_srcset_candidate(img.get("srcset"))
+            # 4. fallback to src
+            if not real_url:
+                real_url = img.get("src")
 
             # If src is a placeholder, always prioritize real_url
             src_val = img.get("src", "")
-            if src_val.startswith("data:image/svg+xml") or src_val.startswith("data:image/gif"):
-                if img.get("data-srcs") or img.get("data-src"):
-                    # Already handled above
-                    pass
-                else:
-                    # No real_url found, keep placeholder
-                    real_url = src_val
+            if (src_val.startswith("data:image/svg+xml") or src_val.startswith("data:image/gif")) and real_url:
+                pass  # already handled
+            elif not real_url:
+                real_url = src_val
 
             absolute_url = self._absolute_url(real_url)
             if absolute_url:
@@ -227,8 +233,8 @@ class WebpageCloner:
                     img["src"] = f"assets/{record.local_name}"
                 else:
                     img["src"] = absolute_url  # CDN fallback
-            # Remove unwanted attributes
-            for attr in ["data-srcs", "data-src", "srcset", "data-lazy-src"]:
+            # Remove lazy attributes
+            for attr in ["data-srcs", "data-src", "srcset", "data-lazy-src", "data-lazy", "data-original", "data-bg", "data-background", "data-srcset"]:
                 img.attrs.pop(attr, None)
 
         # Remove all <noscript> tags
@@ -281,20 +287,8 @@ class WebpageCloner:
             style_tag.string = self._rewrite_css_text(css_text, base_url=self.url, html_context=True)
 
     def _rewrite_lazy_images(self, soup: BeautifulSoup) -> None:
-        """Handle lazy-loaded images stored in non-standard data-* attributes."""
-        for tag in soup.find_all(True):
-            for attr in LAZY_SRC_ATTRS:
-                value = tag.get(attr)
-                if not value or value.startswith("data:"):
-                    continue
-                # data-srcset: pick best candidate, then localize
-                if attr == "data-srcset":
-                    value = self._select_best_srcset_candidate(value) or value
-                absolute_url = self._absolute_url(value)
-                if not absolute_url:
-                    continue
-                record = self._download_asset(absolute_url)
-                tag[attr] = f"assets/{record.local_name}" if record else absolute_url
+        # This is now handled in _rewrite_images, so this is a no-op for compatibility
+        pass
 
     def _rewrite_meta_assets(self, soup: BeautifulSoup) -> None:
         """Localize Open Graph / Twitter Card image URLs inside <meta> tags."""
@@ -310,15 +304,19 @@ class WebpageCloner:
 
     def _rewrite_iframes(self, soup: BeautifulSoup) -> None:
         for iframe in soup.find_all("iframe"):
-            iframe["src"] = "about:blank"
-            iframe.attrs.pop("srcdoc", None)
+            src = iframe.get("src")
+            if src and not src.startswith(("http://", "https://", "//")):
+                iframe["src"] = self._absolute_url(src)
+            # Optionally handle srcdoc as well (leave as is or convert if needed)
 
     def _deactivate_links_and_forms(self, soup: BeautifulSoup) -> None:
+        # Neutralize all <a> tags but keep JS event listeners
         for anchor in soup.find_all("a"):
             anchor["href"] = "javascript:void(0)"
 
+        # Prevent all form submissions
         for form in soup.find_all("form"):
-            form["action"] = "#"
+            form["action"] = "javascript:void(0)"
             form["onsubmit"] = "return false;"
 
     def _rewrite_base_tag(self, soup: BeautifulSoup) -> None:
@@ -327,6 +325,7 @@ class WebpageCloner:
 
     def _remove_tracking_scripts(self, soup: BeautifulSoup) -> None:
         for script in list(soup.find_all("script")):
+            # Only remove if src or inline text matches known tracking patterns
             if self._is_tracking_script(script):
                 script.decompose()
 
