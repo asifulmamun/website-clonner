@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import logging
 import mimetypes
-import os
 import posixpath
 import re
 from dataclasses import dataclass
@@ -16,7 +14,6 @@ from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit
 import urllib3
 import requests
 from bs4 import BeautifulSoup, Tag
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError, sync_playwright
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -73,12 +70,6 @@ class AssetRecord:
     content_type: str = ""
 
 
-@dataclass
-class RenderedPage:
-    final_url: str
-    html: str
-
-
 class WebpageCloner:
     def __init__(
         self,
@@ -86,15 +77,13 @@ class WebpageCloner:
         output_dir: str | Path,
         user_agent: str = DEFAULT_USER_AGENT,
         timeout: int = 20,
-        fast_mode: bool = False,
-        use_playwright: bool = True,
+        keep_runtime_scripts: bool = False,
     ) -> None:
         self.url = self._normalize_url(url)
         self.output_dir = Path(output_dir).resolve()
         self.assets_dir = self.output_dir / "assets"
         self.timeout = timeout
-        self.fast_mode = fast_mode
-        self.use_playwright = use_playwright
+        self.keep_runtime_scripts = keep_runtime_scripts
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": user_agent})
         self.asset_map: Dict[str, AssetRecord] = {}
@@ -119,184 +108,29 @@ class WebpageCloner:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.assets_dir.mkdir(parents=True, exist_ok=True)
 
-        if self.use_playwright:
-            rendered_page = self._render_page()
-            self.url = rendered_page.final_url
-            soup = BeautifulSoup(rendered_page.html, "html.parser")
-        else:
-            response = self._request(self.url)
-            soup = BeautifulSoup(response.text, "html.parser")
+        response = self._request(self.url)
+        soup = BeautifulSoup(response.text, "html.parser")
 
         self._remove_tracking_scripts(soup)
         self._rewrite_stylesheets(soup)
-        self._rewrite_scripts(soup)
+        if self.keep_runtime_scripts:
+            self._rewrite_scripts(soup)
+        else:
+            self._remove_runtime_scripts(soup)
         self._rewrite_images(soup)
         self._rewrite_lazy_images(soup)
         self._rewrite_media_sources(soup)
         self._rewrite_meta_assets(soup)
-        # Keep inline/style-tag CSS untouched; <base> + absolute normalization handles paths more safely.
+        self._rewrite_style_tags(soup)
+        self._rewrite_inline_styles(soup)
         self._rewrite_iframes(soup)
         self._deactivate_links_and_forms(soup)
         self._rewrite_base_tag(soup)
-        self._normalize_remaining_asset_urls(soup)
 
         self._write_cdn_log()
         output_file = self.output_dir / "index.html"
         output_file.write_text(str(soup), encoding="utf-8")
         return output_file
-
-    def _render_page(self) -> RenderedPage:
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch(headless=True)
-            context = browser.new_context(
-                user_agent=self.session.headers.get("User-Agent", DEFAULT_USER_AGENT),
-                viewport={"width": 1440, "height": 2200},
-            )
-            page = context.new_page()
-            page.goto(self.url, wait_until="domcontentloaded", timeout=self.timeout * 1000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=self.timeout * 1000)
-            except PlaywrightTimeoutError:
-                logging.info("Initial network idle wait timed out for %s", self.url)
-
-            self._auto_scroll(page)
-            self._force_lazy_loaded_images(page)
-
-            try:
-                page.wait_for_load_state("networkidle", timeout=5_000)
-            except PlaywrightTimeoutError:
-                page.wait_for_timeout(1_000)
-
-            rendered_page = RenderedPage(final_url=page.url, html=page.content())
-            context.close()
-            browser.close()
-            return rendered_page
-
-    def _auto_scroll(self, page) -> None:
-        previous_height = -1
-        stable_rounds = 0
-        max_rounds = 60
-        rounds = 0
-
-        while stable_rounds < 3 and rounds < max_rounds:
-            rounds += 1
-            height = page.evaluate(
-                "() => Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)"
-            )
-            page.evaluate("height => window.scrollTo(0, height)", height)
-            page.wait_for_timeout(350)
-
-            if height <= previous_height:
-                stable_rounds += 1
-            else:
-                stable_rounds = 0
-                previous_height = height
-
-        page.evaluate("() => window.scrollTo(0, 0)")
-
-    def _force_lazy_loaded_images(self, page) -> None:
-        page.evaluate(
-            """
-            () => {
-                const lazyAttrs = [
-                    'data-src',
-                    'data-lazy',
-                    'data-lazy-src',
-                    'data-original',
-                    'data-bg',
-                    'data-background'
-                ];
-
-                const pickBestSrcset = (srcset) => {
-                    if (!srcset) {
-                        return null;
-                    }
-
-                    let best = null;
-                    for (const entry of srcset.split(',')) {
-                        const trimmed = entry.trim();
-                        if (!trimmed) {
-                            continue;
-                        }
-
-                        const parts = trimmed.split(/\s+/);
-                        const url = parts[0];
-                        const descriptor = parts[1] || '1x';
-                        let score = 0;
-
-                        if (descriptor.endsWith('w')) {
-                            score = parseFloat(descriptor.slice(0, -1)) || 0;
-                        } else if (descriptor.endsWith('x')) {
-                            score = (parseFloat(descriptor.slice(0, -1)) || 0) * 1000;
-                        }
-
-                        if (!best || score > best.score) {
-                            best = { score, url };
-                        }
-                    }
-
-                    return best ? best.url : null;
-                };
-
-                for (const img of document.querySelectorAll('img')) {
-                    let candidate = pickBestSrcset(img.getAttribute('data-srcset'));
-                    candidate = candidate || pickBestSrcset(img.getAttribute('srcset'));
-
-                    if (!candidate) {
-                        const dataSrcs = img.getAttribute('data-srcs');
-                        if (dataSrcs) {
-                            try {
-                                const parsed = JSON.parse(dataSrcs);
-                                if (parsed && typeof parsed === 'object') {
-                                    const keys = Object.keys(parsed);
-                                    candidate = keys.length ? keys[0] : null;
-                                }
-                            } catch (error) {
-                                candidate = null;
-                            }
-                        }
-                    }
-
-                    if (!candidate) {
-                        for (const attr of lazyAttrs) {
-                            const value = img.getAttribute(attr);
-                            if (value && !value.startsWith('data:')) {
-                                candidate = value;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!candidate && img.currentSrc) {
-                        candidate = img.currentSrc;
-                    }
-
-                    if (!candidate) {
-                        const src = img.getAttribute('src');
-                        if (src && !src.startsWith('data:')) {
-                            candidate = src;
-                        }
-                    }
-
-                    if (candidate) {
-                        img.setAttribute('src', new URL(candidate, document.baseURI).href);
-                    }
-                }
-            }
-            """
-        )
-
-    def _html_asset_path(self, record: AssetRecord) -> str:
-        local_name = record.local_name.replace("\\", "/")
-        return f"./assets/{local_name}"
-
-    def _css_asset_path(self, record: AssetRecord, css_local_path: Optional[str | Path]) -> str:
-        if css_local_path is None:
-            return record.local_name.replace("\\", "/")
-
-        css_dir = Path(css_local_path).resolve().parent
-        asset_path = (self.assets_dir / record.local_name).resolve()
-        return os.path.relpath(asset_path, start=css_dir).replace("\\", "/")
 
     def _rewrite_stylesheets(self, soup: BeautifulSoup) -> None:
         for link in soup.find_all("link"):
@@ -309,48 +143,51 @@ class WebpageCloner:
             if not absolute_url:
                 continue
 
-            link_path = urlsplit(absolute_url).path.lower()
-
             # Handle manifest, json, xml, and other non-standard assets
-            if rel & {"manifest"} or link_path.endswith((".webmanifest", ".json", ".xml")):
+            if rel & {"manifest"} or (absolute_url.endswith(('.webmanifest', '.json', '.xml'))):
                 record = self._download_asset(absolute_url)
                 if record:
-                    link["href"] = self._html_asset_path(record)
+                    link["href"] = f"assets/{record.local_name}"
                 else:
-                    if rel & {"manifest"} or link_path.endswith(".webmanifest"):
-                        # Remove broken manifest links to avoid repeated 404 requests on localhost.
-                        link.decompose()
-                        self._log_cdn_url(absolute_url, reason="Manifest download failed; manifest tag removed")
-                    else:
-                        link["href"] = absolute_url
-                        self._log_cdn_url(absolute_url, reason="Manifest/JSON/XML download failed")
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Manifest/JSON/XML fallback")
                 continue
 
-            # Keep stylesheets live to avoid local CSS/chunk path mismatches.
+            # Only localize .css files, fallback to CDN if download fails
             if "stylesheet" in rel or self._looks_like_stylesheet(absolute_url):
-                link["href"] = absolute_url
-                self._log_cdn_url(absolute_url, reason="CSS kept live for stability")
+                # Google Fonts and similar: if download fails, keep CDN link
+                if any(domain in absolute_url for domain in ONLINE_ONLY_DOMAINS):
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[CDN-only] Google Fonts or similar")
+                    continue
+                record = self._download_asset(absolute_url, preferred_ext=".css")
+                if not record:
+                    link["href"] = absolute_url
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] CSS fallback")
+                    continue
+                self._localize_css_asset(record, absolute_url)
+                link["href"] = f"assets/{record.local_name}"
             elif rel & {"icon", "shortcut icon", "apple-touch-icon", "mask-icon"}:
                 record = self._download_asset(absolute_url)
                 if record:
-                    link["href"] = self._html_asset_path(record)
+                    link["href"] = f"assets/{record.local_name}"
                 else:
                     link["href"] = absolute_url
-                    self._log_cdn_url(absolute_url, reason="Icon download failed")
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Icon fallback")
             elif rel & {"preload", "prefetch", "modulepreload"}:
                 record = self._download_asset(absolute_url)
                 if record:
-                    link["href"] = self._html_asset_path(record)
+                    link["href"] = f"assets/{record.local_name}"
                 else:
                     link["href"] = absolute_url
-                    self._log_cdn_url(absolute_url, reason="Preload download failed")
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Preload fallback")
             elif self._looks_like_asset_link(absolute_url):
                 record = self._download_asset(absolute_url)
                 if record:
-                    link["href"] = self._html_asset_path(record)
+                    link["href"] = f"assets/{record.local_name}"
                 else:
                     link["href"] = absolute_url
-                    self._log_cdn_url(absolute_url, reason="Asset download failed")
+                    self._log_cdn_url(absolute_url, reason="[Failed Download] Asset fallback")
 
     def _rewrite_scripts(self, soup: BeautifulSoup) -> None:
         for script in list(soup.find_all("script")):
@@ -366,27 +203,23 @@ class WebpageCloner:
             if not absolute_url:
                 continue
 
-            # Keep JS live to avoid local chunk/runtime 404s.
-            script["src"] = absolute_url
-            if self._should_keep_live_script(absolute_url):
-                self._log_cdn_url(absolute_url, reason="Dynamic chunk/runtime script kept live")
+            record = self._download_asset(absolute_url, preferred_ext=".js")
+            if record:
+                script["src"] = f"assets/{record.local_name}"
             else:
-                self._log_cdn_url(absolute_url, reason="JS kept live for stability")
+                script["src"] = absolute_url
+                self._log_cdn_url(absolute_url, reason="[Failed Download] JS fallback")
 
-    def _should_keep_live_script(self, script_url: str) -> bool:
-        path = urlsplit(script_url).path.lower()
-        dynamic_markers = (
-            "/chunks/",
-            "chunk",
-            "runtime",
-            "webpack",
-            "components--",
-            "/_next/static/",
-            "/public/assets/",
-        )
-        return any(marker in path for marker in dynamic_markers)
+    def _remove_runtime_scripts(self, soup: BeautifulSoup) -> None:
+        # Keep structured data only; remove executable scripts to avoid blank-page hydration issues offline.
+        for script in list(soup.find_all("script")):
+            script_type = (script.get("type") or "").strip().lower()
+            if script_type == "application/ld+json":
+                continue
+            script.decompose()
 
     def _rewrite_images(self, soup: BeautifulSoup) -> None:
+        import json
         for img in soup.find_all("img"):
             # Find the real image URL from data-src, data-lazy, srcset, etc.
             real_url = None
@@ -429,12 +262,20 @@ class WebpageCloner:
             if absolute_url:
                 record = self._download_asset(absolute_url)
                 if record:
-                    img["src"] = self._html_asset_path(record)
+                    img["src"] = f"assets/{record.local_name}"
                 else:
-                    img["src"] = absolute_url
+                    img["src"] = absolute_url  # CDN fallback
+            # Remove lazy attributes
+            for attr in ["data-srcs", "data-src", "srcset", "data-lazy-src", "data-lazy", "data-original", "data-bg", "data-background", "data-srcset"]:
+                img.attrs.pop(attr, None)
+
+        # Remove all <noscript> tags
+        for noscript in soup.find_all("noscript"):
+            noscript.decompose()
 
     def _rewrite_media_sources(self, soup: BeautifulSoup) -> None:
         source_attrs = {
+            "source": "src",
             "video": "poster",
             "audio": "src",
         }
@@ -444,44 +285,15 @@ class WebpageCloner:
                 absolute_url = self._absolute_url(value)
                 if not absolute_url:
                     continue
-                if tag_name == "video" and attr_name == "poster":
-                    record = self._download_asset(absolute_url)
-                    if record:
-                        tag[attr_name] = self._html_asset_path(record)
-                    else:
-                        tag[attr_name] = absolute_url
-                    continue
                 record = self._download_asset(absolute_url)
                 if record:
-                    tag[attr_name] = self._html_asset_path(record)
+                    tag[attr_name] = f"assets/{record.local_name}"
                 else:
-                    tag[attr_name] = absolute_url
-
-        for video in soup.find_all("video"):
-            src = video.get("src")
-            absolute_url = self._absolute_url(src)
-            if absolute_url:
-                video["src"] = absolute_url
+                    tag[attr_name] = absolute_url  # CDN fallback
 
         for source in soup.find_all("source"):
-            source_src = source.get("src")
-            absolute_source = self._absolute_url(source_src)
-            if absolute_source and (
-                source.find_parent("video") is not None
-                or source.get("type", "").lower().startswith("video/")
-            ):
-                source["src"] = absolute_source
-                source.attrs.pop("srcset", None)
-                continue
-
             srcset = source.get("srcset")
             if not srcset:
-                if absolute_source:
-                    record = self._download_asset(absolute_source)
-                    if record:
-                        source["src"] = self._html_asset_path(record)
-                    else:
-                        source["src"] = absolute_source
                 continue
             selected_source = self._select_best_srcset_candidate(srcset)
             absolute_url = self._absolute_url(selected_source)
@@ -489,10 +301,10 @@ class WebpageCloner:
                 continue
             record = self._download_asset(absolute_url)
             if record:
-                source["src"] = self._html_asset_path(record)
+                source["src"] = f"assets/{record.local_name}"
                 source.attrs.pop("srcset", None)
             else:
-                source["src"] = absolute_url
+                source["src"] = absolute_url  # CDN fallback
                 source.attrs.pop("srcset", None)
 
     def _rewrite_inline_styles(self, soup: BeautifulSoup) -> None:
@@ -520,7 +332,7 @@ class WebpageCloner:
                     continue
                 record = self._download_asset(absolute_url)
                 if record:
-                    meta["content"] = self._html_asset_path(record)
+                    meta["content"] = f"assets/{record.local_name}"
 
     def _rewrite_iframes(self, soup: BeautifulSoup) -> None:
         for iframe in soup.find_all("iframe"):
@@ -546,64 +358,6 @@ class WebpageCloner:
         for base_tag in soup.find_all("base"):
             base_tag.decompose()
 
-        head = soup.head
-        if head is None:
-            return
-
-        base = soup.new_tag("base")
-        base["href"] = self._site_base_url()
-        head.insert(0, base)
-
-    def _site_base_url(self) -> str:
-        parts = urlsplit(self.url)
-        path = parts.path if parts.path.endswith("/") else "/"
-        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
-
-    def _is_local_asset_reference(self, value: str) -> bool:
-        normalized = value.strip().lower()
-        return normalized.startswith(("./assets/", "assets/"))
-
-    def _normalize_attr_to_absolute(self, value: str) -> str:
-        raw = value.strip()
-        if not raw:
-            return value
-        if self._is_local_asset_reference(raw):
-            return value
-        if raw.startswith(("http://", "https://", "data:", "javascript:", "mailto:", "tel:", "#")):
-            return value
-        if raw.startswith("//"):
-            return f"{urlsplit(self.url).scheme}:{raw}"
-
-        absolute_url = self._absolute_url(raw)
-        return absolute_url if absolute_url else value
-
-    def _normalize_srcset_to_absolute(self, srcset: str) -> str:
-        entries: List[str] = []
-        for item in srcset.split(","):
-            candidate = item.strip()
-            if not candidate:
-                continue
-
-            parts = candidate.split()
-            url_part = parts[0]
-            descriptor = " ".join(parts[1:])
-            absolute_url = self._normalize_attr_to_absolute(url_part)
-            entry = absolute_url if not descriptor else f"{absolute_url} {descriptor}"
-            entries.append(entry)
-
-        return ", ".join(entries)
-
-    def _normalize_remaining_asset_urls(self, soup: BeautifulSoup) -> None:
-        for tag in soup.find_all(True):
-            for attr in ("src", "href", "poster"):
-                value = tag.get(attr)
-                if isinstance(value, str):
-                    tag[attr] = self._normalize_attr_to_absolute(value)
-
-            srcset_value = tag.get("srcset")
-            if isinstance(srcset_value, str):
-                tag["srcset"] = self._normalize_srcset_to_absolute(srcset_value)
-
     def _remove_tracking_scripts(self, soup: BeautifulSoup) -> None:
         # Only remove scripts that are clear external trackers (very conservative)
         for script in list(soup.find_all("script")):
@@ -628,33 +382,13 @@ class WebpageCloner:
             return True
         return False
 
-    def _rewrite_css_text(
-        self,
-        css_text: str,
-        base_url: str,
-        html_context: bool = False,
-        css_local_path: Optional[str | Path] = None,
-    ) -> str:
-        rewritten = self._rewrite_css_imports(
-            css_text,
-            base_url=base_url,
-            html_context=html_context,
-            css_local_path=css_local_path,
-        )
-        return self._rewrite_css_urls(
-            rewritten,
-            base_url=base_url,
-            html_context=html_context,
-            css_local_path=css_local_path,
-        )
+    def _rewrite_css_text(self, css_text: str, base_url: str, html_context: bool = False, css_local_path: Optional[str] = None) -> str:
+        # First, handle @import
+        rewritten = self._rewrite_css_imports(css_text, base_url=base_url, html_context=html_context)
+        # Then, handle url() and @font-face
+        return self._rewrite_css_urls(rewritten, base_url=base_url, html_context=html_context, css_local_path=css_local_path)
 
-    def _rewrite_css_imports(
-        self,
-        css_text: str,
-        base_url: str,
-        html_context: bool = False,
-        css_local_path: Optional[str | Path] = None,
-    ) -> str:
+    def _rewrite_css_imports(self, css_text: str, base_url: str, html_context: bool = False) -> str:
         def replace(match: re.Match[str]) -> str:
             raw_url = (match.group("url1") or match.group("url2") or "").strip()
             if not raw_url or raw_url.startswith("data:"):
@@ -666,26 +400,16 @@ class WebpageCloner:
 
             record = self._download_asset(absolute_url, preferred_ext=".css")
             if not record:
-                self._log_cdn_url(absolute_url, reason="CSS import download failed")
-                return f"@import url('{absolute_url}')"
+                self._log_cdn_url(absolute_url, reason="[Failed Download] CSS import fallback")
+                return f"@import url('{absolute_url}')"  # CDN fallback
 
             self._localize_css_asset(record, absolute_url)
-            rewritten_url = (
-                self._html_asset_path(record)
-                if html_context
-                else self._css_asset_path(record, css_local_path)
-            )
+            rewritten_url = f"assets/{record.local_name}" if html_context else record.local_name
             return f"@import url('{rewritten_url}')"
 
         return CSS_IMPORT_PATTERN.sub(replace, css_text)
 
-    def _rewrite_css_urls(
-        self,
-        css_text: str,
-        base_url: str,
-        html_context: bool = False,
-        css_local_path: Optional[str | Path] = None,
-    ) -> str:
+    def _rewrite_css_urls(self, css_text: str, base_url: str, html_context: bool = False, css_local_path: Optional[str] = None) -> str:
         def replace(match: re.Match[str]) -> str:
             raw_url = match.group("url").strip()
             if not raw_url or raw_url.startswith("data:"):
@@ -697,29 +421,23 @@ class WebpageCloner:
 
             # Font file detection
             font_exts = (".woff2", ".woff", ".ttf", ".otf", ".eot")
-            raw_path = urlsplit(raw_url).path.lower()
             preferred_ext = None
             for ext in font_exts:
-                if raw_path.endswith(ext):
+                if raw_url.lower().endswith(ext):
                     preferred_ext = ext
                     break
-
-            # Keep font references absolute to prevent localhost font-path mismatches.
-            if preferred_ext:
-                return f"url('{absolute_url}')"
-
             record = self._download_asset(absolute_url, preferred_ext=preferred_ext)
             if not record:
-                self._log_cdn_url(absolute_url, reason="Font or asset download failed")
-                return f"url('{absolute_url}')"
+                self._log_cdn_url(absolute_url, reason="[FALLBACK TO LIVE] Font or asset download failed")
+                return f"url('{absolute_url}')"  # Strict fallback to live
 
+            # If this is a font, rewrite to ../fonts/ for CSS in assets/css/
+            if preferred_ext and record.local_name.lower().endswith(preferred_ext):
+                # Always use ../fonts/[font_file] for CSS in assets/css/
+                return f"url('../fonts/{Path(record.local_name).name}')"
             if record.local_name.lower().endswith(".css"):
                 self._localize_css_asset(record, absolute_url)
-            rewritten = (
-                self._html_asset_path(record)
-                if html_context
-                else self._css_asset_path(record, css_local_path)
-            )
+            rewritten = f"assets/{record.local_name}" if html_context else record.local_name
             return f"url('{rewritten}')"
 
         return CSS_URL_PATTERN.sub(replace, css_text)
@@ -732,11 +450,7 @@ class WebpageCloner:
         css_path = self.assets_dir / record.local_name
         css_text = css_path.read_text(encoding="utf-8", errors="ignore")
         # Pass the local path for correct font rewriting
-        rewritten_css = self._rewrite_css_text(
-            css_text,
-            base_url=source_url,
-            css_local_path=css_path,
-        )
+        rewritten_css = self._rewrite_css_text(css_text, base_url=source_url, css_local_path=css_path)
         css_path.write_text(rewritten_css, encoding="utf-8")
 
     def _download_asset(self, asset_url: str, preferred_ext: Optional[str] = None) -> Optional[AssetRecord]:
@@ -745,10 +459,6 @@ class WebpageCloner:
         existing = self.asset_map.get(asset_url)
         if existing:
             return existing
-
-        if self.fast_mode and self._should_skip_download(asset_url, preferred_ext):
-            self._log_cdn_url(asset_url, reason="Fast mode: kept heavy media live")
-            return None
 
         # Always load certain domains from the internet (e.g. Google Fonts).
         if self._is_online_only(asset_url):
@@ -810,18 +520,6 @@ class WebpageCloner:
         self.asset_map[asset_url] = record
         return record
 
-    def _should_skip_download(self, asset_url: str, preferred_ext: Optional[str]) -> bool:
-        if preferred_ext and preferred_ext.lower() in {".js", ".css", ".woff", ".woff2", ".ttf", ".otf", ".eot", ".webmanifest", ".json", ".xml"}:
-            return False
-
-        path = urlsplit(asset_url).path.lower()
-        # Fast mode: keep images regular (download/localize), but skip heavy video/audio.
-        heavy_stream_exts = (
-            ".mp4", ".webm", ".m4v", ".mov", ".avi", ".m3u8", ".ts", ".mkv",
-            ".mp3", ".wav", ".ogg", ".aac", ".m4a", ".flac",
-        )
-        return path.endswith(heavy_stream_exts)
-
     def _is_online_only(self, url: str) -> bool:
         netloc = urlsplit(url).netloc.lower()
         return any(domain in netloc for domain in ONLINE_ONLY_DOMAINS)
@@ -834,10 +532,10 @@ class WebpageCloner:
     def _write_cdn_log(self) -> None:
         log_path = self.output_dir / "cdn_load.txt"
         with log_path.open("w", encoding="utf-8") as fh:
-            fh.write("# Live fallback assets\n")
+            fh.write("# Assets loaded from the internet (CDN fallback)\n")
             fh.write(f"# Generated by WebpageCloner — {len(self.cdn_log)} URL(s)\n\n")
             for url, reason in sorted(self.cdn_log.items()):
-                fh.write(f"[FALLBACK TO LIVE] {url} -> {reason}\n")
+                fh.write(f"{url}\n    reason: {reason}\n\n")
         if self.cdn_log:
             logging.info(
                 "CDN fallback log written to %s (%d URL(s) load from internet)",
@@ -867,11 +565,8 @@ class WebpageCloner:
             subfolder = "fonts"
         elif ext in [".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp", ".bmp", ".ico"] or "image" in content_type:
             subfolder = "img"
-        elif ext in [".webmanifest", ".json", ".xml"] or any(
-            token in content_type for token in ("manifest", "json", "xml")
-        ):
-            subfolder = "data"
         else:
+            # fallback: try to guess from content_type
             if "javascript" in content_type:
                 subfolder = "js"
             elif "css" in content_type:
@@ -880,8 +575,6 @@ class WebpageCloner:
                 subfolder = "fonts"
             elif "image" in content_type:
                 subfolder = "img"
-            elif any(token in content_type for token in ("manifest", "json", "xml")):
-                subfolder = "data"
             else:
                 subfolder = "misc"
         candidate = f"{subfolder}/{safe_stem}-{digest}{extension}"
@@ -928,20 +621,7 @@ class WebpageCloner:
         return urlsplit(url).path.lower().endswith(".css")
 
     def _looks_like_asset_link(self, url: str) -> bool:
-        asset_extensions = (
-            ".ico",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".svg",
-            ".webp",
-            ".woff",
-            ".woff2",
-            ".ttf",
-            ".webmanifest",
-            ".json",
-            ".xml",
-        )
+        asset_extensions = (".ico", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".woff", ".woff2", ".ttf")
         return urlsplit(url).path.lower().endswith(asset_extensions)
 
     def _absolute_url(self, value: Optional[str], base_url: Optional[str] = None) -> Optional[str]:
@@ -1122,14 +802,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="HTTP timeout in seconds.",
     )
     parser.add_argument(
-        "--fast-mode",
+        "--keep-runtime-scripts",
         action="store_true",
-        help="Skip heavy video/audio downloads and keep them live to speed up cloning while still localizing images.",
-    )
-    parser.add_argument(
-        "--no-playwright",
-        action="store_true",
-        help="Use requests-based HTML fetch instead of Playwright rendering.",
+        help=(
+            "Keep executable <script> tags in output. "
+            "By default they are removed to prevent blank pages in offline clones."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -1168,8 +846,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         output_dir=output_dir,
         user_agent=args.user_agent,
         timeout=args.timeout,
-        fast_mode=args.fast_mode,
-        use_playwright=not args.no_playwright,
+        keep_runtime_scripts=args.keep_runtime_scripts,
     )
     output_file = cloner.clone()
     print()
